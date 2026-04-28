@@ -1,0 +1,91 @@
+# rest-mail testbed — dev-only network/DNS/cert substrate
+#
+# Brings up:
+#   * mailnet               (10.99.0.0/16, the shared docker network)
+#   * certgen               (one-shot init — issues CA + per-domain certs)
+#   * dnsmasq               (authoritative DNS for *.test)
+#   * clamav (optional)     (shared antivirus singleton, profile: scanning)
+#
+# Other rest-mail repos (rest-mail-server, reference-mailserver) join this
+# network as `external: true` and use 10.99.0.10 as their DNS server.
+#
+# See README.md for the integration contract.
+
+# Pinned to 2026.04.28 for reproducibility. Switch to :latest in dev if you
+# want to track upstream daily; pin in CI / shared environments.
+x-image-tag: &image-tag "2026.04.28"
+
+services:
+
+  # ─── certgen ───────────────────────────────────────────────────────
+  # One-shot init container. Generates a self-signed CA + per-domain
+  # certs into the `certs` named volume. Idempotent — safe to re-run.
+  certgen:
+    image: ghcr.io/rest-mail/reference-certgen:2026.04.28
+    container_name: testbed-certgen
+    restart: "no"
+    environment:
+      CERTGEN_DOMAINS: "mail1.test mail2.test mail3.test"
+      CERTGEN_CA_NAME: "Reference Test CA"
+      CERTGEN_ORG: "rest-mail testbed"
+    volumes:
+      - certs:/certs
+    networks:
+      - mailnet
+
+  # ─── dnsmasq ───────────────────────────────────────────────────────
+  # Authoritative DNS for *.test. Other peers configure this as their
+  # DNS server via `dns: [10.99.0.10]` to get the fake-internet view.
+  dnsmasq:
+    image: ghcr.io/rest-mail/reference-dnsmasq:2026.04.28
+    container_name: testbed-dnsmasq
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      DNSMASQ_LOG_LEVEL: info
+    volumes:
+      - ./configs/dnsmasq/zones.conf:/etc/dnsmasq-overlay/zones.conf:ro
+    networks:
+      mailnet:
+        ipv4_address: 10.99.0.10
+    healthcheck:
+      test: ["CMD-SHELL", "dig @127.0.0.1 mail1.test +short +time=2 +tries=1 | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  # ─── clamav (optional) ─────────────────────────────────────────────
+  # Shared antivirus singleton. Brought up by `task up:full` (or any
+  # compose command that activates the `scanning` profile). First boot
+  # downloads the signature DB (~5–10 minutes); be patient.
+  #
+  # Peers reach it as `clamav:3310` (DNS) or `10.99.0.21:3310`.
+  clamav:
+    image: ghcr.io/rest-mail/reference-clamav:2026.04.28
+    container_name: testbed-clamav
+    restart: unless-stopped
+    profiles: [scanning]
+    environment:
+      CLAMAV_FRESHCLAM: "true"
+    networks:
+      mailnet:
+        ipv4_address: 10.99.0.21
+
+# ─── networks ────────────────────────────────────────────────────────
+# `mailnet` is created and owned by this composer. Other rest-mail
+# repos join it as external (see README.md → "Joining mailnet").
+networks:
+  mailnet:
+    name: ${COMPOSE_PROJECT_NAME:-testbed}_mailnet
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.99.0.0/16
+
+# ─── volumes ─────────────────────────────────────────────────────────
+volumes:
+  certs:
+    name: ${COMPOSE_PROJECT_NAME:-testbed}_certs

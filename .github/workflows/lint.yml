@@ -1,0 +1,47 @@
+name: lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate docker-compose.yml with scanning profile
+        run: docker compose --profile scanning -f docker-compose.yml config --quiet
+
+  taskfile:
+    name: taskfile syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate Taskfile.yml
+        run: task --list-all
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: pip install --user yamllint
+      - name: Lint yaml
+        run: |
+          yamllint -d "{extends: relaxed, rules: {line-length: disable, comments: disable, document-start: disable, truthy: {check-keys: false}}}" \
+            docker-compose.yml Taskfile.yml .github/workflows/

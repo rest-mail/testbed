@@ -1,0 +1,2 @@
+# reference-certgen takes its domain list from the CERTGEN_DOMAINS env var
+# (set in docker-compose.yml). No config files needed.

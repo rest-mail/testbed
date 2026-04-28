@@ -1,0 +1,249 @@
+# rest-mail/testbed
+
+Dev-only network/DNS/cert substrate for the [`rest-mail`](https://github.com/rest-mail) ecosystem.
+
+This repo runs three things on a shared docker network called `mailnet`:
+
+1. **dnsmasq** — authoritative DNS for `*.test` (mail1.test, mail2.test, mail3.test, plus MX, SRV, SPF, DMARC, autoconfig, MTA-STS records).
+2. **certgen** — a one-shot init container that issues a self-signed CA + per-domain TLS certs into a shared volume.
+3. **clamav** *(optional)* — a shared antivirus singleton, brought up by `task up:full`.
+
+That's it. There's no daemon source code in this repo and no Dockerfiles. It's a thin composer that pulls published `ghcr.io/rest-mail/reference-*` images and wires them onto a shared network.
+
+The point: any project can `git clone rest-mail/testbed && task up`, then bring up its own services on the same network and instantly have a realistic fake-internet — DNS resolves, MX records work, TLS validates against a CA you can install in your trust store.
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/rest-mail/testbed.git
+cd testbed
+task up                  # dnsmasq + certgen
+task ca:fetch            # writes ./ca.crt for client trust-store install
+task smoke               # verify everything works
+```
+
+To also bring up the shared clamav singleton:
+
+```bash
+task up:full
+```
+
+To tear down:
+
+```bash
+task down                # stop + remove (keeps the certs volume)
+task down:clean          # also remove the certs volume (forces regen)
+```
+
+---
+
+## The contract
+
+This is what consumers (other rest-mail repos, your own projects) need to know.
+
+### Network name
+
+The shared network is called **`<COMPOSE_PROJECT_NAME>_mailnet`** — defaults to **`testbed_mailnet`**.
+
+Other projects join it as `external`:
+
+```yaml
+# your-project/docker-compose.yml
+services:
+  myservice:
+    image: ...
+    networks:
+      mailnet:
+        ipv4_address: 10.99.0.50    # pick something not in the table below
+
+networks:
+  mailnet:
+    external: true
+    name: testbed_mailnet
+```
+
+If you change `COMPOSE_PROJECT_NAME` in this repo, peers must match. Easiest path is to leave it at the default.
+
+### DNS server
+
+Inside the network, the dnsmasq container is at **`10.99.0.10`**. To resolve `*.test` from your peer containers, configure them with:
+
+```yaml
+services:
+  myservice:
+    dns: [10.99.0.10]
+    networks: [mailnet]
+```
+
+Peers can then `dig mail1.test`, `dig mail1.test MX`, `dig _imaps._tcp.mail1.test SRV`, etc., and get the records this repo's `configs/dnsmasq/zones.conf` declares.
+
+### CA certs
+
+`task ca:fetch` copies the CA root cert out of the shared volume to `./ca.crt`.
+
+Trust it on your **host** (so e.g. `curl https://mail1.test` from your laptop works through a port-forward):
+
+```bash
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ./ca.crt
+
+# Linux (Debian/Ubuntu)
+sudo cp ./ca.crt /usr/local/share/ca-certificates/reference-test-ca.crt
+sudo update-ca-certificates
+```
+
+Trust it inside a **peer container** (so `wget https://mail1.test` from inside the container works):
+
+```yaml
+# Mount the certs volume read-only and add the CA at startup, OR
+# bake it into the image:
+services:
+  myservice:
+    volumes:
+      - testbed_certs:/etc/testbed-certs:ro
+    # entrypoint: cp /etc/testbed-certs/ca.crt /usr/local/share/ca-certificates/ \
+    #             && update-ca-certificates && exec myservice
+
+volumes:
+  testbed_certs:
+    external: true
+    name: testbed_certs
+```
+
+Per-domain server certs are also in the volume: `mail1.test.crt`, `mail1.test.key`, etc. Mount them into postfix/dovecot/whatever needs them.
+
+### IP address allocation
+
+The current zones config assigns these IPs on `mailnet` (10.99.0.0/16):
+
+| IP | Hostname | Owner |
+|----|----------|-------|
+| `10.99.0.10` | `dnsmasq` (the DNS server) | this repo |
+| `10.99.0.11` | `mail1.test` | reference-mailserver |
+| `10.99.0.12` | `mail2.test` | reference-mailserver |
+| `10.99.0.13` | `mail3.test` | rest-mail-server |
+| `10.99.0.20` | `api` (REST API endpoint) | rest-mail-server |
+| `10.99.0.21` | `clamav` (shared singleton) | this repo (optional) |
+| `10.99.0.41` | `postgres-mail1` | reference-mailserver |
+| `10.99.0.42` | `postgres-mail2` | reference-mailserver |
+| `10.99.0.43` | `postgres-mail3` | rest-mail-server |
+
+If you add a peer, pick an unused IP and add a matching `address=` entry to `configs/dnsmasq/zones.conf`.
+
+### Supported `*.test` records
+
+`configs/dnsmasq/zones.conf` declares:
+
+- **A** for `mail{1,2,3}.test`, `postgres-mail{1,2,3}`, `api`, `clamav`, plus `autoconfig.<domain>`, `autodiscover.<domain>`, `mta-sts.<domain>` (all → `10.99.0.20` for the API)
+- **MX** for `mail{1,2,3}.test` → self, priority 10
+- **PTR** reverse-DNS for the three mail-server IPs
+- **TXT** SPF, DMARC, MTA-STS, TLS-RPT
+- **SRV** for IMAP/IMAPS, POP3/POP3S, SMTP submission
+
+`task dig -- <name> [<type>]` runs a dig from inside the network.
+
+```bash
+task dig -- mail1.test
+task dig -- mail1.test MX
+task dig -- _imaps._tcp.mail1.test SRV
+```
+
+Non-`.test` queries forward to `8.8.8.8` / `8.8.4.4` so peers using us as their DNS server can still resolve the real internet.
+
+---
+
+## Adding a domain
+
+To add `mail4.test`:
+
+1. Pick an unused IP, e.g. `10.99.0.14`.
+2. Add records to `configs/dnsmasq/zones.conf`:
+
+   ```
+   address=/mail4.test/10.99.0.14
+   mx-host=mail4.test,mail4.test,10
+   ptr-record=14.0.99.10.in-addr.arpa,mail4.test
+   txt-record=mail4.test,"v=spf1 ip4:10.99.0.14 -all"
+   txt-record=_dmarc.mail4.test,"v=DMARC1; p=reject; rua=mailto:postmaster@mail4.test"
+   # ...plus any SRV/autoconfig/etc you need
+   ```
+
+3. Add `mail4.test` to `CERTGEN_DOMAINS` in `docker-compose.yml`:
+
+   ```yaml
+   environment:
+     CERTGEN_DOMAINS: "mail1.test mail2.test mail3.test mail4.test"
+   ```
+
+4. Restart:
+
+   ```bash
+   task down                # leaves certs volume in place
+   task up                  # certgen issues mail4.test cert idempotently
+   task restart:dns         # picks up zones.conf changes
+   ```
+
+   Or, if you want a fully fresh CA + certs:
+
+   ```bash
+   task down:clean
+   task up
+   task ca:fetch            # re-install on host
+   ```
+
+---
+
+## Tasks reference
+
+| Command | What it does |
+|---------|--------------|
+| `task up` | dnsmasq + certgen (default) |
+| `task up:full` | also brings up shared clamav |
+| `task down` | stop + remove containers (keeps certs volume) |
+| `task down:clean` | also remove certs volume (forces regen) |
+| `task restart:dns` | restart dnsmasq after editing zones.conf |
+| `task ca:fetch` | copy `ca.crt` out of the volume to `./ca.crt` |
+| `task ca:show` | print the CA cert details without copying |
+| `task ps` | show container status |
+| `task logs` / `task logs:dns` / `task logs:certgen` / `task logs:clamav` | tail logs |
+| `task dig -- <name> [<type>]` | run dig against the testbed DNS from inside the network |
+| `task smoke` | verify dnsmasq resolves `mail1.test` and `ca.crt` is a valid x509 |
+
+---
+
+## Image versions
+
+This composer pins each reference image to calver `2026.04.28` for reproducibility (see `docker-compose.yml`). Bump when you want a newer wrapper.
+
+| Image | Tag | Purpose |
+|-------|-----|---------|
+| [`ghcr.io/rest-mail/reference-dnsmasq`](https://github.com/rest-mail/reference-dnsmasq) | `2026.04.28` | DNS for `*.test` |
+| [`ghcr.io/rest-mail/reference-certgen`](https://github.com/rest-mail/reference-certgen) | `2026.04.28` | one-shot CA + cert issuer |
+| [`ghcr.io/rest-mail/reference-clamav`](https://github.com/rest-mail/reference-clamav) | `2026.04.28` | shared antivirus (optional) |
+
+`:latest` also works in dev — see the comment in `docker-compose.yml`.
+
+---
+
+## What this repo does **not** do
+
+- It doesn't run mail servers (postfix, dovecot). Use [`rest-mail/reference-mailserver`](https://github.com/rest-mail/reference-mailserver) for that.
+- It doesn't run the rest-mail API. Use [`rest-mail/rest-mail-server`](https://github.com/rest-mail/rest-mail-server).
+- It doesn't manage real internet certs. It's dev-only — the CA is self-signed with neutral defaults.
+- It doesn't ship any daemon code. Sources for the daemons live in the `rest-mail/reference-*` repos.
+
+---
+
+## See also
+
+- [`rest-mail/conventions`](https://github.com/rest-mail/conventions) — the contract every `reference-*` image follows
+- [`rest-mail/reference-dnsmasq`](https://github.com/rest-mail/reference-dnsmasq)
+- [`rest-mail/reference-certgen`](https://github.com/rest-mail/reference-certgen)
+- [`rest-mail/reference-clamav`](https://github.com/rest-mail/reference-clamav)
+
+## License
+
+[MIT](./LICENSE).

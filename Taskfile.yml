@@ -1,0 +1,143 @@
+version: "3"
+
+# rest-mail/testbed — Taskfile
+#
+# Thin composer for the shared mailnet network, dnsmasq, certgen, and
+# (optional) shared clamav. See README.md for the integration contract.
+
+env:
+  COMPOSE_PROJECT_NAME: testbed
+
+tasks:
+
+  # ════════════════════════════════════════════════════════
+  # up / down
+  # ════════════════════════════════════════════════════════
+
+  up:
+    desc: Bring up dnsmasq + certgen on mailnet
+    cmds:
+      - docker compose up -d certgen dnsmasq
+      - |
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  testbed ready"
+        echo ""
+        echo "  Network   →  ${COMPOSE_PROJECT_NAME}_mailnet  (10.99.0.0/16)"
+        echo "  DNS       →  10.99.0.10  (configure peers with dns: [10.99.0.10])"
+        echo "  Certs     →  ${COMPOSE_PROJECT_NAME}_certs    (run task ca:fetch to copy ca.crt out)"
+        echo ""
+        echo "  task up:full   bring up shared clamav too (scanning profile)"
+        echo "  task ca:fetch  copy ca.crt to ./ca.crt"
+        echo "  task ps        show container status"
+        echo "  task logs      tail logs"
+        echo "  task down      stop and remove"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  up:full:
+    desc: Bring up dnsmasq + certgen + shared clamav (scanning profile)
+    cmds:
+      - docker compose --profile scanning up -d
+      - echo "Note clamav first-boot signature download takes 5–10 minutes."
+
+  down:
+    desc: Stop and remove all containers (preserves the certs volume)
+    cmds:
+      - docker compose --profile scanning down --remove-orphans
+
+  down:clean:
+    desc: Stop, remove containers AND the certs volume (destructive — forces regen)
+    cmds:
+      - docker compose --profile scanning down --remove-orphans -v
+
+  restart:dns:
+    desc: Restart dnsmasq (pick up edits to configs/dnsmasq/zones.conf)
+    cmds:
+      - docker compose restart dnsmasq
+
+  # ════════════════════════════════════════════════════════
+  # CA cert export
+  # ════════════════════════════════════════════════════════
+
+  ca:fetch:
+    desc: Copy ca.crt out of the certs volume to ./ca.crt for client trust-store install
+    cmds:
+      - |
+        # Wait briefly for certgen to finish if it's still running.
+        for i in $(seq 1 30); do
+          if docker run --rm -v "${COMPOSE_PROJECT_NAME}_certs:/certs:ro" alpine:3.20 test -f /certs/ca.crt 2>/dev/null; then
+            break
+          fi
+          echo "  waiting for ca.crt (attempt $i/30)..."
+          sleep 1
+        done
+      - docker run --rm -v "${COMPOSE_PROJECT_NAME}_certs:/certs:ro" -v "$(pwd):/out" alpine:3.20 cp /certs/ca.crt /out/ca.crt
+      - echo "Wrote ./ca.crt"
+      - openssl x509 -in ./ca.crt -noout -subject -issuer -dates
+
+  ca:show:
+    desc: Print the CA cert details without copying it out
+    cmds:
+      - docker run --rm -v "${COMPOSE_PROJECT_NAME}_certs:/certs:ro" alpine:3.20 sh -c "apk add --no-cache openssl >/dev/null 2>&1 && openssl x509 -in /certs/ca.crt -text -noout"
+
+  # ════════════════════════════════════════════════════════
+  # Diagnostics
+  # ════════════════════════════════════════════════════════
+
+  ps:
+    desc: Show container status
+    cmds:
+      - docker compose --profile scanning ps
+
+  logs:
+    desc: Tail logs from all testbed containers
+    cmds:
+      - docker compose --profile scanning logs -f --tail=100
+
+  logs:dns:
+    desc: Tail logs from dnsmasq
+    cmds:
+      - docker compose logs -f --tail=100 dnsmasq
+
+  logs:certgen:
+    desc: Tail logs from certgen
+    cmds:
+      - docker compose logs -f --tail=100 certgen
+
+  logs:clamav:
+    desc: Tail logs from clamav
+    cmds:
+      - docker compose logs -f --tail=100 clamav
+
+  dig:
+    desc: 'Run a dig query against the testbed dnsmasq from inside the network. Usage: task dig -- mail1.test [MX|SRV|TXT|...]'
+    cmds:
+      - |
+        docker run --rm --network "${COMPOSE_PROJECT_NAME}_mailnet" alpine:3.20 sh -c \
+          "apk add --no-cache bind-tools >/dev/null 2>&1 && dig @10.99.0.10 {{.CLI_ARGS}}"
+
+  # ════════════════════════════════════════════════════════
+  # Smoke test
+  # ════════════════════════════════════════════════════════
+
+  smoke:
+    desc: Verify the testbed is healthy (dnsmasq resolves *.test, ca.crt is a valid x509)
+    cmds:
+      - |
+        echo "1/3 dnsmasq resolves mail1.test ..."
+        result=$(docker run --rm --network "${COMPOSE_PROJECT_NAME}_mailnet" alpine:3.20 sh -c \
+          "apk add --no-cache bind-tools >/dev/null 2>&1 && dig @10.99.0.10 mail1.test +short +time=2 +tries=1")
+        echo "  -> $result"
+        test "$result" = "10.99.0.11" || { echo "FAIL expected 10.99.0.11"; exit 1; }
+      - |
+        echo "2/3 dnsmasq resolves MX for mail1.test ..."
+        result=$(docker run --rm --network "${COMPOSE_PROJECT_NAME}_mailnet" alpine:3.20 sh -c \
+          "apk add --no-cache bind-tools >/dev/null 2>&1 && dig @10.99.0.10 mail1.test MX +short +time=2 +tries=1")
+        echo "  -> $result"
+        echo "$result" | grep -q "mail1.test" || { echo "FAIL no MX record"; exit 1; }
+      - |
+        echo "3/3 ca.crt is a valid x509 ..."
+        docker run --rm -v "${COMPOSE_PROJECT_NAME}_certs:/certs:ro" alpine:3.20 \
+          sh -c "apk add --no-cache openssl >/dev/null 2>&1 && openssl x509 -in /certs/ca.crt -noout -subject" \
+          || { echo "FAIL ca.crt missing or invalid"; exit 1; }
+      - echo "OK testbed smoke test passed"
