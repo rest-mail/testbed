@@ -2,10 +2,12 @@ version: "3"
 
 # rest-mail/testbed — Taskfile
 #
-# Pure substrate: shared mailnet network, certs volume, dnsmasq.
-# Everything is driven from task — no docker-compose. Resource names
-# are derived from PROJECT so they remain the contract for consumers
-# joining mailnet by name.
+# Pure substrate: shared mailnet network, certs volume, dnsmasq fragments
+# volume. Per-service lifecycle (the dnsmasq container itself) lives in
+# tasks/<service>.yml and is pulled in via the `includes:` block below.
+# Everything is driven from task — no docker-compose. Resource names are
+# derived from PROJECT so they remain the contract for consumers joining
+# mailnet by name.
 #
 # certgen, clamav, and rspamd are not in the testbed: consumers
 # (rest-mail-server, reference-mailserver) issue certs on demand and
@@ -27,6 +29,23 @@ vars:
   DNS_IP: 10.99.0.10
   IMAGE_TAG: '{{.IMAGE_TAG | default "2026.04.28"}}'
   DNSMASQ_NAME: '{{.PROJECT}}-dnsmasq'
+
+# ════════════════════════════════════════════════════════
+# Includes
+#
+# Per-service Taskfiles under tasks/ expose up/down/restart/reload/reap/
+# logs/ps for a single container. Vars from the substrate vars block
+# above are passed in so naming stays consistent with PROJECT.
+# ════════════════════════════════════════════════════════
+includes:
+  dnsmasq:
+    taskfile: ./tasks/dnsmasq.yml
+    vars:
+      PROJECT: '{{.PROJECT}}'
+      NETWORK: '{{.NETWORK}}'
+      IP: '{{.DNS_IP}}'
+      IMAGE_TAG: '{{.IMAGE_TAG}}'
+      FRAGMENTS_VOLUME: '{{.DNSMASQ_FRAGMENTS_VOLUME}}'
 
 tasks:
 
@@ -128,8 +147,8 @@ tasks:
     desc: Bring up the testbed (network + certs volume + dnsmasq)
     deps: [bootstrap, clean:orphans]
     cmds:
-      - task: dns:reap
-      - task: dns:up
+      - task: dnsmasq:reap
+      - task: dnsmasq:up
       - |
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -139,28 +158,18 @@ tasks:
         echo "  DNS       →  {{.DNS_IP}}  (configure peers with dns: [{{.DNS_IP}}])"
         echo "  Certs vol →  {{.CERTS_VOLUME}}  (consumers issue certs on demand)"
         echo ""
-        echo "  task ca:fetch    copy ca.crt to ./ca.crt (after a consumer has issued one)"
-        echo "  task ps          show testbed container status"
-        echo "  task dns:logs    tail dnsmasq logs"
-        echo "  task down        stop testbed containers (preserves volume + network)"
-        echo "  task down:clean  stop + remove network + certs volume"
-        echo "  VERBOSE=1 task … for raw docker output"
+        echo "  task ca:fetch       copy ca.crt to ./ca.crt (after a consumer has issued one)"
+        echo "  task ps             show testbed container status"
+        echo "  task dnsmasq:logs   tail dnsmasq logs"
+        echo "  task down           stop testbed containers (preserves volume + network)"
+        echo "  task down:clean     stop + remove network + certs volume"
+        echo "  VERBOSE=1 task ...  raw docker output"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
   down:
     desc: Stop and remove testbed containers (preserves the certs volume + network)
     cmds:
-      - |
-        if docker ps -aq --filter "name=^/{{.DNSMASQ_NAME}}$" | grep -q .; then
-          echo "  stopping {{.DNSMASQ_NAME}}"
-          if [ -n "$VERBOSE" ]; then
-            docker rm -f {{.DNSMASQ_NAME}}
-          else
-            docker rm -f {{.DNSMASQ_NAME}} >/dev/null
-          fi
-        else
-          echo "  {{.DNSMASQ_NAME}} not running"
-        fi
+      - task: dnsmasq:down
 
   down:clean:
     desc: Stop containers and remove network + certs volume + dnsmasq fragments (destructive)
@@ -195,97 +204,6 @@ tasks:
         fi
 
   # ════════════════════════════════════════════════════════
-  # dns (dnsmasq)
-  # ════════════════════════════════════════════════════════
-
-  dns:up:
-    desc: Start (or recreate) the dnsmasq container with fragments volume mounted
-    deps: [bootstrap]
-    cmds:
-      - |
-        echo "  starting dnsmasq ({{.DNSMASQ_NAME}} @ {{.DNS_IP}})"
-        if [ -n "$VERBOSE" ]; then
-          docker rm -f {{.DNSMASQ_NAME}} 2>/dev/null || true
-          docker run -d --name {{.DNSMASQ_NAME}} \
-            --restart unless-stopped \
-            --cap-add NET_ADMIN \
-            --network {{.NETWORK}} \
-            --ip {{.DNS_IP}} \
-            -e DNSMASQ_LOG_LEVEL=info \
-            -v "{{.DNSMASQ_FRAGMENTS_VOLUME}}:/etc/dnsmasq-overlay:ro" \
-            ghcr.io/rest-mail/reference-dnsmasq:{{.IMAGE_TAG}}
-        else
-          docker rm -f {{.DNSMASQ_NAME}} >/dev/null 2>&1 || true
-          docker run -d --name {{.DNSMASQ_NAME}} \
-            --restart unless-stopped \
-            --cap-add NET_ADMIN \
-            --network {{.NETWORK}} \
-            --ip {{.DNS_IP}} \
-            -e DNSMASQ_LOG_LEVEL=info \
-            -v "{{.DNSMASQ_FRAGMENTS_VOLUME}}:/etc/dnsmasq-overlay:ro" \
-            ghcr.io/rest-mail/reference-dnsmasq:{{.IMAGE_TAG}} >/dev/null
-        fi
-
-  dns:reap:
-    desc: Remove dnsmasq fragments whose owning compose project no longer has any container
-    cmds:
-      - |
-        # Read each fragment's `# managed-by-project: <name>` header,
-        # check if any container with that compose-project label still exists,
-        # remove orphans.
-        manifest=$(docker run --rm -v "{{.DNSMASQ_FRAGMENTS_VOLUME}}:/dst:ro" alpine:3.20 sh -c '
-          cd /dst 2>/dev/null || exit 0
-          for f in $(ls 2>/dev/null | grep -E "^[0-9]+-.*\.conf$" | grep -v "^00-"); do
-            project=$(grep -m1 "^# managed-by-project: " "$f" 2>/dev/null | awk "{print \$3}")
-            [ -n "$project" ] && echo "$f $project"
-          done
-        ')
-        if [ -z "$manifest" ]; then
-          echo "  no managed fragments to check"
-          exit 0
-        fi
-        to_reap=""
-        echo "$manifest" | while read -r f project; do
-          if ! docker ps -aq --filter "label=com.docker.compose.project=$project" | grep -q .; then
-            echo "$f"
-          fi
-        done > /tmp/dns-reap-orphans.$$
-        to_reap=$(cat /tmp/dns-reap-orphans.$$)
-        rm -f /tmp/dns-reap-orphans.$$
-        if [ -z "$to_reap" ]; then
-          echo "  no orphan fragments"
-          exit 0
-        fi
-        echo "  reaping orphan fragments:"
-        echo "$to_reap" | sed 's/^/    /'
-        # Remove all orphan fragments in one alpine call
-        files=$(echo "$to_reap" | tr '\n' ' ')
-        docker run --rm -v "{{.DNSMASQ_FRAGMENTS_VOLUME}}:/dst" alpine:3.20 \
-          sh -c "cd /dst && rm -f $files"
-        echo "  reloading {{.DNSMASQ_NAME}}"
-        docker restart {{.DNSMASQ_NAME}} >/dev/null 2>&1 || true
-
-  dns:reload:
-    desc: Restart dnsmasq to pick up fragment changes (consumers call this after writing to the fragments volume)
-    cmds:
-      - |
-        if docker ps -aq --filter "name=^/{{.DNSMASQ_NAME}}$" | grep -q .; then
-          echo "  reloading {{.DNSMASQ_NAME}}"
-          if [ -n "$VERBOSE" ]; then
-            docker restart {{.DNSMASQ_NAME}}
-          else
-            docker restart {{.DNSMASQ_NAME}} >/dev/null
-          fi
-        else
-          echo "  {{.DNSMASQ_NAME}} not running; nothing to reload"
-        fi
-
-  dns:restart:
-    desc: Recreate the dnsmasq container (alias for dns:up)
-    cmds:
-      - task: dns:up
-
-  # ════════════════════════════════════════════════════════
   # CA cert export
   # ════════════════════════════════════════════════════════
 
@@ -316,12 +234,7 @@ tasks:
   ps:
     desc: Show testbed container status
     cmds:
-      - docker ps -a --filter "name={{.DNSMASQ_NAME}}"
-
-  dns:logs:
-    desc: Tail dnsmasq logs
-    cmds:
-      - docker logs -f --tail=100 {{.DNSMASQ_NAME}}
+      - task: dnsmasq:ps
 
   dig:
     desc: 'Run a dig query against testbed dnsmasq from inside mailnet. Usage: task dig -- mail1.test [MX|SRV|TXT|...]'

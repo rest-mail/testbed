@@ -1,0 +1,135 @@
+version: "3"
+
+# testbed/tasks/dnsmasq — Taskfile
+#
+# Drives the dnsmasq container via plain `docker run` (no compose).
+# Included by the testbed root Taskfile under namespace `dns`.
+#
+# dnsmasq is the testbed's authoritative resolver for mailnet. It serves
+# a baked-in 00-testbed.conf plus a fragments overlay volume that
+# consumers (rest-mail-server, reference-mailserver, ...) write into to
+# register their own A/MX/SRV/TXT records. `reload` re-reads the overlay;
+# `reap` prunes fragments whose owning compose project no longer exists.
+#
+# Output is friendly by default. Re-run with VERBOSE=1 to see the raw
+# docker / shell output (e.g. VERBOSE=1 task dns:up).
+
+silent: true
+
+vars:
+  PROJECT: '{{.PROJECT | default "testbed"}}'
+  NETWORK: '{{.NETWORK | default "testbed_mailnet"}}'
+  IP: '{{.IP | default "10.99.0.10"}}'
+  IMAGE_TAG: '{{.IMAGE_TAG | default "2026.04.28"}}'
+  IMAGE: '{{.IMAGE | default "ghcr.io/rest-mail/reference-dnsmasq"}}'
+  FRAGMENTS_VOLUME: '{{.FRAGMENTS_VOLUME | default "testbed_dnsmasq_fragments"}}'
+  CONTAINER_NAME: '{{.PROJECT}}-dnsmasq'
+  LOG_LEVEL: '{{.LOG_LEVEL | default "info"}}'
+
+tasks:
+
+  # ════════════════════════════════════════════════════════
+  # up / down / restart
+  # ════════════════════════════════════════════════════════
+
+  up:
+    desc: Start (or recreate) the dnsmasq container with fragments volume mounted
+    cmds:
+      - |
+        [ -n "${VERBOSE}" ] && OUTPUT=/dev/stdout || OUTPUT=/dev/null
+        echo "  starting dnsmasq ({{.CONTAINER_NAME}} @ {{.IP}})"
+        docker rm -f {{.CONTAINER_NAME}} >$OUTPUT 2>&1 || true
+        docker run -d --name {{.CONTAINER_NAME}} \
+          --restart unless-stopped \
+          --cap-add NET_ADMIN \
+          --network {{.NETWORK}} \
+          --ip {{.IP}} \
+          -e DNSMASQ_LOG_LEVEL={{.LOG_LEVEL}} \
+          -v {{.FRAGMENTS_VOLUME}}:/etc/dnsmasq-overlay:ro \
+          {{.IMAGE}}:{{.IMAGE_TAG}} >$OUTPUT 2>&1
+
+  down:
+    desc: Stop and remove the dnsmasq container (preserves the fragments volume)
+    cmds:
+      - |
+        [ -n "${VERBOSE}" ] && OUTPUT=/dev/stdout || OUTPUT=/dev/null
+        if docker ps -aq --filter "name=^/{{.CONTAINER_NAME}}$" | grep -q .; then
+          echo "  stopping {{.CONTAINER_NAME}}"
+          docker rm -f {{.CONTAINER_NAME}} >$OUTPUT 2>&1
+        else
+          echo "  {{.CONTAINER_NAME}} not running"
+        fi
+
+  restart:
+    desc: Recreate the dnsmasq container (alias for up)
+    cmds:
+      - task: up
+
+  reload:
+    desc: Restart the container to pick up fragment changes
+    cmds:
+      - |
+        [ -n "${VERBOSE}" ] && OUTPUT=/dev/stdout || OUTPUT=/dev/null
+        if docker ps -aq --filter "name=^/{{.CONTAINER_NAME}}$" | grep -q .; then
+          echo "  reloading {{.CONTAINER_NAME}}"
+          docker restart {{.CONTAINER_NAME}} >$OUTPUT 2>&1
+        else
+          echo "  {{.CONTAINER_NAME}} not running; nothing to reload"
+        fi
+
+  # ════════════════════════════════════════════════════════
+  # Fragment maintenance
+  # ════════════════════════════════════════════════════════
+
+  reap:
+    desc: Remove dnsmasq fragments whose owning compose project no longer has any container
+    cmds:
+      - |
+        # Read each fragment's `# managed-by-project: <name>` header,
+        # check if any container with that compose-project label still exists,
+        # remove orphans.
+        manifest=$(docker run --rm -v "{{.FRAGMENTS_VOLUME}}:/dst:ro" alpine:3.20 sh -c '
+          cd /dst 2>/dev/null || exit 0
+          for f in $(ls 2>/dev/null | grep -E "^[0-9]+-.*\.conf$" | grep -v "^00-"); do
+            project=$(grep -m1 "^# managed-by-project: " "$f" 2>/dev/null | awk "{print \$3}")
+            [ -n "$project" ] && echo "$f $project"
+          done
+        ')
+        if [ -z "$manifest" ]; then
+          echo "  no managed fragments to check"
+          exit 0
+        fi
+        to_reap=""
+        echo "$manifest" | while read -r f project; do
+          if ! docker ps -aq --filter "label=com.docker.compose.project=$project" | grep -q .; then
+            echo "$f"
+          fi
+        done > /tmp/dns-reap-orphans.$$
+        to_reap=$(cat /tmp/dns-reap-orphans.$$)
+        rm -f /tmp/dns-reap-orphans.$$
+        if [ -z "$to_reap" ]; then
+          echo "  no orphan fragments"
+          exit 0
+        fi
+        echo "  reaping orphan fragments:"
+        echo "$to_reap" | sed 's/^/    /'
+        # Remove all orphan fragments in one alpine call
+        files=$(echo "$to_reap" | tr '\n' ' ')
+        docker run --rm -v "{{.FRAGMENTS_VOLUME}}:/dst" alpine:3.20 \
+          sh -c "cd /dst && rm -f $files"
+        echo "  reloading {{.CONTAINER_NAME}}"
+        docker restart {{.CONTAINER_NAME}} >/dev/null 2>&1 || true
+
+  # ════════════════════════════════════════════════════════
+  # Diagnostics
+  # ════════════════════════════════════════════════════════
+
+  logs:
+    desc: Tail dnsmasq logs
+    cmds:
+      - docker logs -f --tail=100 {{.CONTAINER_NAME}}
+
+  ps:
+    desc: Show dnsmasq container status
+    cmds:
+      - docker ps -a --filter "name={{.CONTAINER_NAME}}"

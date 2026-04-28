@@ -183,7 +183,7 @@ To add `mail4.test`:
    ```bash
    task down                # leaves certs volume in place
    task up                  # certgen issues mail4.test cert idempotently
-   task restart:dns         # picks up zones.conf changes
+   task dnsmasq:restart     # picks up zones.conf changes
    ```
 
    Or, if you want a fully fresh CA + certs:
@@ -200,17 +200,24 @@ To add `mail4.test`:
 
 | Command | What it does |
 |---------|--------------|
-| `task up` | dnsmasq + certgen (default) |
+| `task up` | bootstrap network + volumes + start dnsmasq |
 | `task up:full` | also brings up shared clamav |
-| `task down` | stop + remove containers (keeps certs volume) |
-| `task down:clean` | also remove certs volume (forces regen) |
-| `task restart:dns` | restart dnsmasq after editing zones.conf |
+| `task down` | stop dnsmasq, preserve network + volumes |
+| `task down:clean` | destructive teardown (also removes certs volume) |
+| `task dnsmasq:up` / `dnsmasq:down` / `dnsmasq:restart` | dnsmasq lifecycle |
+| `task dnsmasq:reload` / `dnsmasq:reap` | reload zones.conf / force-recreate container |
+| `task dnsmasq:logs` / `dnsmasq:ps` | tail dnsmasq logs / show its status |
 | `task ca:fetch` | copy `ca.crt` out of the volume to `./ca.crt` |
 | `task ca:show` | print the CA cert details without copying |
-| `task ps` | show container status |
-| `task logs` / `task logs:dns` / `task logs:certgen` / `task logs:clamav` | tail logs |
+| `task ps` | list testbed containers |
 | `task dig -- <name> [<type>]` | run dig against the testbed DNS from inside the network |
 | `task smoke` | verify dnsmasq resolves `mail1.test` and `ca.crt` is a valid x509 |
+
+`VERBOSE=1 task ...` enables verbose output on any task.
+
+### Layout
+
+Container lifecycle tasks live under `tasks/<container>.yml` (e.g. `tasks/dnsmasq.yml` for the `dnsmasq:*` namespace). The root `Taskfile.yml` orchestrates substrate concerns — network, volumes, certs export, smoke — and includes the per-container task files.
 
 ---
 
