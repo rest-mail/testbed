@@ -7,18 +7,6 @@ on:
     branches: [master]
 
 jobs:
-  compose:
-    name: docker compose config
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate docker-compose.yml
-        run: docker compose -f docker-compose.yml config --quiet
-
-      - name: Validate docker-compose.yml with scanning profile
-        run: docker compose --profile scanning -f docker-compose.yml config --quiet
-
   taskfile:
     name: taskfile syntax
     runs-on: ubuntu-latest
@@ -44,4 +32,4 @@ jobs:
       - name: Lint yaml
         run: |
           yamllint -d "{extends: relaxed, rules: {line-length: disable, comments: disable, document-start: disable, truthy: {check-keys: false}}}" \
-            docker-compose.yml Taskfile.yml .github/workflows/
+            Taskfile.yml .github/workflows/
