@@ -82,18 +82,24 @@ tasks:
   # ════════════════════════════════════════════════════════
 
   reap:
-    desc: Remove dnsmasq fragments whose owning compose project no longer has any container
+    desc: Remove dnsmasq fragments whose owning project no longer has any container
     cmds:
       - |
-        # Read each fragment's `# managed-by-project: <name>` header,
-        # check if any container with that compose-project label still exists,
-        # remove orphans.
+        # Read each fragment's `# managed-by-project: <name>` header and check
+        # whether any container named `<project>-*` still exists. Everything on
+        # the testbed is driven by plain `docker run` with `<project>-<svc>`
+        # container names — the old com.docker.compose.project label check
+        # matched nothing after the compose retirement, so every live fragment
+        # looked orphaned. Name-prefix matching errs on the keep side (a
+        # `rest-mail-mail4-*` container also keeps `rest-mail` alive), which is
+        # the right bias for a reaper.
         manifest=$(docker run --rm -v "{{.FRAGMENTS_VOLUME}}:/dst:ro" alpine:3.20 sh -c '
           cd /dst 2>/dev/null || exit 0
           for f in $(ls 2>/dev/null | grep -E "^[0-9]+-.*\.conf$" | grep -v "^00-"); do
             project=$(grep -m1 "^# managed-by-project: " "$f" 2>/dev/null | awk "{print \$3}")
-            [ -n "$project" ] && echo "$f $project"
+            if [ -n "$project" ]; then echo "$f $project"; fi
           done
+          exit 0
         ')
         if [ -z "$manifest" ]; then
           echo "  no managed fragments to check"
@@ -101,7 +107,7 @@ tasks:
         fi
         to_reap=""
         echo "$manifest" | while read -r f project; do
-          if ! docker ps -aq --filter "label=com.docker.compose.project=$project" | grep -q .; then
+          if ! docker ps -aq --filter "name=$project-" | grep -q .; then
             echo "$f"
           fi
         done > /tmp/dns-reap-orphans.$$
