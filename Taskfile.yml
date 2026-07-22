@@ -29,6 +29,12 @@ vars:
   DNS_IP: 10.99.0.10
   IMAGE_TAG: '{{.IMAGE_TAG | default "2026.04.28"}}'
   DNSMASQ_NAME: '{{.PROJECT}}-dnsmasq'
+  # Uniquely named and passed explicitly to the include below: tasks/dnsmasq.yml
+  # declares a self-referencing `IMAGE` var, and when THIS taskfile is included
+  # by a parent (rest-mail), Task flattens all vars into one namespace — a bare
+  # unpassed IMAGE resolves to the parent's (empty) value and the image ref
+  # renders as ":<tag>", so dnsmasq:up dies with "invalid reference format".
+  DNSMASQ_IMAGE: '{{.DNSMASQ_IMAGE | default "ghcr.io/rest-mail/reference-dnsmasq"}}'
 
 # ════════════════════════════════════════════════════════
 # Includes
@@ -44,6 +50,7 @@ includes:
       PROJECT: '{{.PROJECT}}'
       NETWORK: '{{.NETWORK}}'
       IP: '{{.DNS_IP}}'
+      IMAGE: '{{.DNSMASQ_IMAGE}}'
       IMAGE_TAG: '{{.IMAGE_TAG}}'
       FRAGMENTS_VOLUME: '{{.DNSMASQ_FRAGMENTS_VOLUME}}'
 
