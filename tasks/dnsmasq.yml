@@ -39,14 +39,29 @@ tasks:
         [ -n "${VERBOSE}" ] && OUTPUT=/dev/stdout || OUTPUT=/dev/null
         echo "  starting dnsmasq ({{.CONTAINER_NAME}} @ {{.IP}})"
         docker rm -f {{.CONTAINER_NAME}} >$OUTPUT 2>&1 || true
-        docker run -d --name {{.CONTAINER_NAME}} \
-          --restart unless-stopped \
-          --cap-add NET_ADMIN \
-          --network {{.NETWORK}} \
-          --ip {{.IP}} \
-          -e DNSMASQ_LOG_LEVEL={{.LOG_LEVEL}} \
-          -v {{.FRAGMENTS_VOLUME}}:/etc/dnsmasq-overlay:ro \
-          {{.IMAGE}}:{{.IMAGE_TAG}} >$OUTPUT 2>&1
+        # Static-IP release can lag behind `docker rm -f` (libnetwork endpoint
+        # teardown), making an immediate re-run fail with "address already in
+        # use". dnsmasq is the testbed's single point of DNS — retry briefly
+        # rather than leaving the whole network resolver-less.
+        for attempt in 1 2 3 4 5; do
+          if docker run -d --name {{.CONTAINER_NAME}} \
+            --restart unless-stopped \
+            --cap-add NET_ADMIN \
+            --network {{.NETWORK}} \
+            --ip {{.IP}} \
+            -e DNSMASQ_LOG_LEVEL={{.LOG_LEVEL}} \
+            -v {{.FRAGMENTS_VOLUME}}:/etc/dnsmasq-overlay:ro \
+            {{.IMAGE}}:{{.IMAGE_TAG}} >$OUTPUT 2>&1; then
+            break
+          fi
+          if [ "$attempt" = 5 ]; then
+            echo "  ERROR: dnsmasq failed to start after 5 attempts" >&2
+            exit 1
+          fi
+          echo "  start failed (attempt $attempt) — retrying..."
+          docker rm -f {{.CONTAINER_NAME}} >$OUTPUT 2>&1 || true
+          sleep 2
+        done
 
   down:
     desc: Stop and remove the dnsmasq container (preserves the fragments volume)
