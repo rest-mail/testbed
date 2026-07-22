@@ -6,3 +6,9 @@ ca.crt
 .idea/
 .vscode/
 *.swp
+
+# Consumer instance configs: manifest + rendered config.env are committed;
+# per-instance secrets and generated DNS/DKIM artifacts are not.
+configs/*/secrets.env
+configs/*/dns.env
+configs/*/dkim.conf
