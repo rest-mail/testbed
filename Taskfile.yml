@@ -27,7 +27,7 @@ vars:
   DNSMASQ_FRAGMENTS_VOLUME: '{{.PROJECT}}_dnsmasq_fragments'
   SUBNET: 10.99.0.0/16
   DNS_IP: 10.99.0.10
-  IMAGE_TAG: '{{.IMAGE_TAG | default "2026.04.28"}}'
+  IMAGE_TAG: '{{.IMAGE_TAG | default "0.1.0"}}'
   DNSMASQ_NAME: '{{.PROJECT}}-dnsmasq'
   # Uniquely named and passed explicitly to the include below: tasks/dnsmasq.yml
   # declares a self-referencing `IMAGE` var, and when THIS taskfile is included
