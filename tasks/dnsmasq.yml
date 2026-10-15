@@ -20,7 +20,7 @@ vars:
   PROJECT: '{{.PROJECT | default "testbed"}}'
   NETWORK: '{{.NETWORK | default "testbed_mailnet"}}'
   IP: '{{.IP | default "10.99.0.10"}}'
-  IMAGE_TAG: '{{.IMAGE_TAG | default "2026.04.28"}}'
+  IMAGE_TAG: '{{.IMAGE_TAG | default "0.1.0"}}'
   IMAGE: '{{.IMAGE | default "ghcr.io/rest-mail/reference-dnsmasq"}}'
   FRAGMENTS_VOLUME: '{{.FRAGMENTS_VOLUME | default "testbed_dnsmasq_fragments"}}'
   CONTAINER_NAME: '{{.PROJECT}}-dnsmasq'
