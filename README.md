@@ -223,13 +223,13 @@ Container lifecycle tasks live under `tasks/<container>.yml` (e.g. `tasks/dnsmas
 
 ## Image versions
 
-This composer pins each reference image to calver `2026.04.28` for reproducibility (see `docker-compose.yml`). Bump when you want a newer wrapper.
+This composer pins each reference image to a SemVer release, `0.1.0`, for reproducibility (`IMAGE_TAG` in the Taskfiles). Bump it when you want a newer wrapper.
 
 | Image | Tag | Purpose |
 |-------|-----|---------|
-| [`ghcr.io/rest-mail/reference-dnsmasq`](https://github.com/rest-mail/reference-dnsmasq) | `2026.04.28` | DNS for `*.test` |
-| [`ghcr.io/rest-mail/reference-certgen`](https://github.com/rest-mail/reference-certgen) | `2026.04.28` | one-shot CA + cert issuer |
-| [`ghcr.io/rest-mail/reference-clamav`](https://github.com/rest-mail/reference-clamav) | `2026.04.28` | shared antivirus (optional) |
+| [`ghcr.io/rest-mail/reference-dnsmasq`](https://github.com/rest-mail/reference-dnsmasq) | `0.1.0` | DNS for `*.test` |
+| [`ghcr.io/rest-mail/reference-certgen`](https://github.com/rest-mail/reference-certgen) | `0.1.0` | one-shot CA + cert issuer |
+| [`ghcr.io/rest-mail/reference-clamav`](https://github.com/rest-mail/reference-clamav) | `0.1.0` | shared antivirus (optional) |
 
 `:latest` also works in dev — see the comment in `docker-compose.yml`.
 
