@@ -1,8 +1,17 @@
 # Changelog
 
 All notable changes to `rest-mail/testbed` are recorded here.
-Versioning follows [calver](https://calver.org/) — `YYYY.MM.DD` (with a `.N`
-suffix for multiple releases on the same day).
+Versioning follows [SemVer](https://semver.org/); releases are tagged
+`v<version>`.
+
+## Unreleased
+
+- `configs/restmail/` is marked as the restmail.test fixture template.
+  Releases published from now on carry it as
+  `restmail-fixture-<version>.tar.gz` plus a `.sha256`, built from the tag by
+  the `release fixture` workflow, so consumers copy a pinned version instead
+  of reading a clone.
+- `task fixture:pack` / `task fixture:test`; CI runs the packaging tests.
 
 ## 2026.04.28
 

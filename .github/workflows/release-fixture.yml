@@ -1,0 +1,47 @@
+name: release fixture
+
+# Attaches the restmail.test fixture template to every published release:
+# restmail-fixture-<version>.tar.gz and restmail-fixture-<version>.tar.gz.sha256.
+# Triggered only by publishing a GitHub release whose tag is v<SemVer>
+# (e.g. v0.2.0 -> restmail-fixture-0.2.0.tar.gz). The archive is built from
+# the tag's committed tree, never from a working tree. Assets are uploaded
+# once: a re-run against a release that already has them fails rather than
+# replacing bytes consumers may have pinned.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  fixture:
+    name: fixture template asset
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test packaging
+        run: scripts/fixture-test.sh
+
+      - name: Pack the tag
+        run: |
+          case "$TAG" in
+            v*) ;;
+            *) echo "release tag '$TAG' is not v<SemVer>" >&2; exit 1 ;;
+          esac
+          scripts/fixture-pack.sh "${TAG#v}" "refs/tags/$TAG" dist
+          (cd dist && sha256sum -c "restmail-fixture-${TAG#v}.tar.gz.sha256")
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            "dist/restmail-fixture-${TAG#v}.tar.gz" \
+            "dist/restmail-fixture-${TAG#v}.tar.gz.sha256"

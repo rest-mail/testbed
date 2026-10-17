@@ -155,6 +155,54 @@ Non-`.test` queries forward to `8.8.8.8` / `8.8.4.4` so peers using us as their 
 
 ---
 
+## restmail.test fixture template
+
+`configs/restmail/manifest.yml` and the `config.env` rendered from it describe the restmail.test instance on this substrate: the `10.99.0.0/16` plan, dnsmasq at `10.99.0.10`, `testbed_certs`, `cert_provider: testbed-certgen`. They are a **template**. A consumer copies them once, into a directory it owns, and from then on edits and re-renders its own copy. Nothing should symlink to them or read them out of a testbed clone at runtime: a branch switch or `git clean` here must never change how someone else's stack boots.
+
+The template is those two files and nothing else. The per-instance siblings a consumer generates next to its copy (`secrets.env`, `dns.env`, `dkim.conf`) are gitignored here and never shipped, and neither are certs, keys or any other working-tree state.
+
+### Release assets
+
+Each GitHub release published with a `v<version>` tag gets two assets, attached by the [`release fixture`](.github/workflows/release-fixture.yml) workflow from that tag's committed tree:
+
+| Asset | Contents |
+|-------|----------|
+| `restmail-fixture-<version>.tar.gz` | `restmail-fixture-<version>/manifest.yml` and `restmail-fixture-<version>/config.env`, mode 0644, owner 0:0, stamped with the tag's commit time |
+| `restmail-fixture-<version>.tar.gz.sha256` | `sha256sum` line for the archive |
+
+The workflow starts on publishing a release, not on a tag push; it never replaces assets a release already has. No release carries these assets yet; the first one published after this change will.
+
+### Using a pinned version
+
+```bash
+V=0.2.0   # a published testbed release; pin it
+base=https://github.com/rest-mail/testbed/releases/download/v$V
+curl -fsSLO "$base/restmail-fixture-$V.tar.gz"
+curl -fsSLO "$base/restmail-fixture-$V.tar.gz.sha256"
+sha256sum -c "restmail-fixture-$V.tar.gz.sha256"    # macOS: shasum -a 256 -c
+
+# Expect one directory and two regular files (-rw-r--r--); refuse anything else.
+tar -tvzf "restmail-fixture-$V.tar.gz"
+
+mkdir -p instances/restmail.test
+tar -xzf "restmail-fixture-$V.tar.gz" -C instances/restmail.test \
+  --strip-components=1 --no-same-owner --no-same-permissions
+```
+
+`gh release download "v$V" -R rest-mail/testbed -p "restmail-fixture-$V.tar.gz*"` fetches the same two files. `instances/restmail.test/` is now yours: commit it, edit it, generate `secrets.env` / `dns.env` / `dkim.conf` beside it. Moving to a newer template is another copy, at a new pinned version, merged by hand.
+
+### Building and checking it locally
+
+```bash
+task fixture:pack -- 0.2.0          # dist/restmail-fixture-0.2.0.tar.gz (+ .sha256) from HEAD
+task fixture:pack -- 0.2.0 v0.2.0   # from a tag: matches that release's asset byte for byte
+task fixture:test                   # packaging + consumer-copy tests (no Docker)
+```
+
+`scripts/fixture-pack.sh <version> [<ref>] [<out-dir>]` takes a bare SemVer version and any ref naming a commit, packs only the allowlisted files from that commit, and writes the same bytes every time for the same ref (GNU tar and gzip; `cmp` a local build against a published asset to check one). CI runs `scripts/fixture-test.sh` on every pull request.
+
+---
+
 ## Adding a domain
 
 To add `mail4.test`:
@@ -212,6 +260,8 @@ To add `mail4.test`:
 | `task ps` | list testbed containers |
 | `task dig -- <name> [<type>]` | run dig against the testbed DNS from inside the network |
 | `task smoke` | verify dnsmasq resolves `mail1.test` and `ca.crt` is a valid x509 |
+| `task fixture:pack -- <version> [<ref>]` | pack the restmail.test fixture template into `dist/` |
+| `task fixture:test` | test the fixture packaging and consumer-copy steps |
 
 `VERBOSE=1 task ...` enables verbose output on any task.
 

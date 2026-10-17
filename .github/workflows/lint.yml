@@ -33,3 +33,15 @@ jobs:
         run: |
           yamllint -d "{extends: relaxed, rules: {line-length: disable, comments: disable, document-start: disable, truthy: {check-keys: false}}}" \
             Taskfile.yml .github/workflows/
+
+  fixture:
+    name: fixture template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: Pack and test the fixture template
+        run: scripts/fixture-test.sh
