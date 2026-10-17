@@ -12,3 +12,6 @@ ca.crt
 configs/*/secrets.env
 configs/*/dns.env
 configs/*/dkim.conf
+
+# Fixture release assets built by `task fixture:pack`
+dist/

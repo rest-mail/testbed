@@ -1,3 +1,10 @@
+# TEMPLATE: the restmail.test fixture. This file and the rendered config.env
+# beside it are what a consumer copies once and then owns; nothing reads them
+# out of a testbed clone at runtime. Releases ship exactly these two files as
+# restmail-fixture-<version>.tar.gz (see README, "restmail.test fixture
+# template"). The per-instance generated siblings (secrets.env, dns.env,
+# dkim.conf) are never part of the template.
+#
 # Logical mail instance: restmail.test (the rest-mail Go stack on the testbed).
 # See docs/plans/2026-07-21-parameterization.md for the model.
 #

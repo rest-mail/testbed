@@ -270,3 +270,19 @@ tasks:
         echo "  -> $result"
         echo "$result" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "FAIL upstream DNS not resolving"; exit 1; }
       - echo "OK testbed smoke test passed (per-consumer records appear once consumers register)"
+
+  # ════════════════════════════════════════════════════════
+  # restmail.test fixture template (release asset)
+  # ════════════════════════════════════════════════════════
+
+  fixture:pack:
+    desc: 'Pack the restmail.test fixture template (release asset) into dist/. Usage: task fixture:pack -- <version> [<ref>]'
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - scripts/fixture-pack.sh {{.CLI_ARGS}}
+
+  fixture:test:
+    desc: Test fixture packaging and the consumer copy steps (no Docker, no network)
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - scripts/fixture-test.sh
